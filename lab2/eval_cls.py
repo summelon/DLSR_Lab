@@ -106,13 +106,10 @@ def main():
     num_ftrs = model_eval.fc.in_features
     model_eval.fc = torch.nn.Linear(num_ftrs, NUM_CLS)
 
-    '''
     if args.balance == 'weighted':
         model_eval.load_state_dict(torch.load('./workspace/weighted_ckpt'))
     elif args.balance == 'augment':
         model_eval.load_state_dict(torch.load('./workspace/augment_ckpt'))
-    '''
-    model_eval.load_state_dict(torch.load('./workspace/ckpt'))
     model_eval.to(device)
 
     result = eval_model(model_eval)
