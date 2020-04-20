@@ -1,74 +1,35 @@
 import os
 import copy
 import tqdm
-import argparse as arg
 import torch
 import torchvision
 
+import pytorch_warmup as warmup
+import sys
+sys.path.append("/home/chihsheng03/DLSR_Lab/lab3")
+sys.path.append("/home/chihsheng03/.local/lib/python3.6/site-packages")
 import my_dataset
 
-parser = arg.ArgumentParser()
-parser.add_argument(
-        '--data_dir', type=str,
-        help="Path to dataset, e.g. '../food11re'",
-        dest="data_dir", default="../food11re")
-parser.add_argument(
-        '--balance', type=str,
-        help="The way how to balance data, \"weighted\" or \"augment\"",
-        dest="balance", default="weighted")
-parser.add_argument(
-        '--save_path', type=str,
-        help="The path where is the saved pb file is.",
-        dest="save_path", default="./workspace/ckpt.pb")
-args = parser.parse_args()
 
-if args.data_dir is None:
-    raise ValueError("You must supply the dataset dir")
-if args.balance is None:
-    raise ValueError(
-            "Supply a kind of balance method: \"weighted\" or \"augment\"")
-
-BATCH_SIZE = 64
 PATIENCE = 2
 train = 'skewed_training'
 validation = 'validation'
 evaluation = 'evaluation'
 num_cls = 11
 
-device = torch.device(
-        "cuda:0"
-        if torch.cuda.is_available
-        else "cpu")
 
-dataset = {
-        x: my_dataset.Food11Dataset(
-            os.path.join(args.data_dir, x),
-            is_train=(True if x == train else False),
-            balance=args.balance
-            ) for x in [train, validation, evaluation]}
-
-
-def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
-    data_loaders = {
-            x: torch.utils.data.DataLoader(
-                dataset=dataset[x],
-                num_workers=0,
-                shuffle=(
-                    True
-                    if (x == train and args.balance == 'augment') else False),
-                batch_size=BATCH_SIZE,
-                sampler=(
-                    dataset[x].wts_sampler()
-                    if args.balance == 'weighted' else None)
-                ) for x in [train, validation, evaluation]}
-    print(data_loaders[train].num_workers)
-
+def train_model(
+        model, device, criterion, optimizer,
+        data_loaders, scheduler, num_epochs=25):
+    # Initialize
     best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
     patience = 0
+    lr_rec = []
 
-    for epoch in range(num_epochs):
-        print('Epoch {}/{}'.format(epoch+1, num_epochs))
+    # Start training
+    for epoch in range(1, num_epochs+1):
+        print('Epoch {}/{}'.format(epoch, num_epochs))
         print('-' * 10)
 
         # load best model weights
@@ -104,6 +65,11 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
                     if phase == train:
                         loss.backward()
                         optimizer.step()
+                        # Update CosineAnnealing scheduler first,
+                        # then warm up scheduler
+                        scheduler[0].step()
+                        scheduler[1].dampen()
+                        lr_rec.append(optimizer.param_groups[0]['lr'])
 
                 # statistics
                 running_size += inputs.size(0)
@@ -113,12 +79,13 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
                         loss='{:.3f}'.format(
                             running_loss/running_size),
                         acc='{:.3f}'.format(
-                            running_corrects.double()/running_size)
+                            running_corrects.double()/running_size),
+                        lr="{:.2e}".format(
+                            optimizer.param_groups[0]['lr'])
                         )
-            if phase == train:
-                scheduler.step()
+
             # epoch_loss = running_loss / data_sizes[phase]
-            epoch_acc = running_corrects.double() / len(dataset[phase])
+            epoch_acc = running_corrects.double() / running_size
 
             # deep copy the model
             if phase == validation:
@@ -129,16 +96,58 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
                 else:
                     patience += 1
 
-        #if patience == PATIENCE:
-            #break
+        if patience == PATIENCE:
+            break
 
     print('Best validation Acc: {:4f}'.format(best_acc))
     model.load_state_dict(best_model_wts)
 
+    import matplotlib.pyplot as plt
+    x_axis = [x for x in range(len(lr_rec))]
+    plt.scatter(x_axis, lr_rec, c='r', marker='.')
+    plt.ylabel('learning rate')
+    plt.xlabel('steps')
+    plt.savefig('lr_record.png')
+
     return model
 
 
-def main():
+def eval_model(model, device, eval_data_loader):
+    model.to(device)
+    model.eval()
+
+    running_size = 0
+    running_corrects = 0
+
+    pbar = tqdm.tqdm(eval_data_loader)
+    for inputs, labels in pbar:
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+
+        with torch.set_grad_enabled(False):
+            outputs = model(inputs)
+            _, preds = torch.max(outputs, 1)
+
+        running_size += inputs.size(0)
+        running_corrects += torch.sum(preds == labels.data)
+        pbar.set_postfix(
+                acc='{:.3f}'.format(
+                    running_corrects.double()/running_size),
+                )
+
+    # epoch_loss = running_loss / data_sizes[phase]
+    acc = running_corrects.double() / running_size
+    print(running_size)
+
+    return acc
+
+
+def run(params):
+    device = torch.device(
+            "cuda:0"
+            if torch.cuda.is_available
+            else "cpu")
+
     model_conv = torchvision.models.resnet18(pretrained=True)
     # for param in model_conv.parameters():
     #    param.requires_grad = False
@@ -147,27 +156,65 @@ def main():
     # have requires_grad=True by default
     num_ftrs = model_conv.fc.in_features
     model_conv.fc = torch.nn.Linear(num_ftrs, num_cls)
-
     model_conv = model_conv.to(device)
 
+    # Produce dataset
+    dataset = {
+            x: my_dataset.Food11Dataset(
+                os.path.join(params['data_dir'], x),
+                is_train=(True if x == train else False),
+                balance=params['balance']
+                ) for x in [train, validation, evaluation]}
+
+    # Make data loaders
+    data_loaders = {
+            x: torch.utils.data.DataLoader(
+                dataset=dataset[x],
+                num_workers=16,
+                shuffle=(
+                    True
+                    if (x == train and params['balance'] == 'augment')
+                    else False),
+                batch_size=params['batch_size'],
+                sampler=(
+                    dataset[x].wts_sampler()
+                    if params['balance'] == 'weighted' else None)
+                ) for x in [train, validation, evaluation]}
+
+    # Define loss function
     criterion = torch.nn.CrossEntropyLoss()
 
     # Observe that only parameters of final layer are being optimized as
     # opposed to before.
     optimizer_conv = torch.optim.SGD(
             model_conv.parameters(),
-            lr=4e-3, momentum=0.9)
+            lr=params['lr'], momentum=0.9)
 
-    # Decay LR by a factor of 0.1 every 7 epochs
-    exp_lr_scheduler = torch.optim.lr_scheduler.StepLR(
-            optimizer_conv, step_size=10, gamma=0.7)
+    # Define number of steps by epoch number
+    # Number of steps = number of dataloader * number of epochs
+    num_steps = (
+            len(dataset[train])//params['batch_size']) * params['num_epochs']
+
+    # Decay LR by CosineAnnealing
+    cos_anl_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer_conv, T_max=num_steps)
+
+    # Implement warmup
+    warmup_scheduler = warmup.ExponentialWarmup(
+            optimizer_conv, warmup_period=params['warmup_period'])
 
     model_conv = train_model(
-            model_conv, criterion, optimizer_conv,
-            exp_lr_scheduler, num_epochs=17)
+            model_conv, device,
+            criterion, optimizer_conv, data_loaders,
+            [cos_anl_scheduler, warmup_scheduler],
+            num_epochs=int(params['num_epochs']))
 
-    torch.save(model_conv.state_dict(), args.save_path)
+    accuracy = eval_model(model_conv, device, data_loaders[evaluation])
+
+    # torch.save(model_conv.state_dict(), params['save_path'])
+
+    return float(accuracy)
 
 
 if __name__ == '__main__':
-    main()
+    print("Do not run this python file directly.")
