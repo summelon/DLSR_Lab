@@ -38,23 +38,35 @@ def load_img(filepath):
     return img
 
 
-def input_transform():
-    imgaug = cus_aug.ImgAugTransform()
-    return trans.Compose([
+def input_transform(img_size, is_training):
+    imgaug = cus_aug.ImgAugTransform(img_size+32)
+    train_trans = trans.Compose([
         imgaug,
+        trans.CenterCrop(img_size),
+        trans.ToTensor(),
+        trans.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+    val_trans = trans.Compose([
+        trans.Resize(img_size+32),
+        trans.CenterCrop(img_size),
         trans.ToTensor(),
         trans.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
 
+    if is_training:
+        return train_trans
+    else:
+        return val_trans
+
 
 class Food11Dataset(torch.utils.data.Dataset):
-    def __init__(self, image_dir, is_train=False,
-                 input_transform=input_transform,
-                 balance=None):
+    def __init__(self, image_dir, img_size,
+                 is_train=False, balance=None,
+                 input_transform=input_transform):
         super(Food11Dataset, self).__init__()
         image_dir = os.path.expanduser(image_dir)
         path_pattern = image_dir + '/**/*.*'
         files_list = sorted(glob.glob(path_pattern, recursive=True))
         self.datapath = image_dir
+        self.img_size = img_size
         record_dict = {int(x): [] for x in os.listdir(image_dir)}
         for file in files_list:
             if is_image_file(file):
@@ -85,7 +97,7 @@ class Food11Dataset(torch.utils.data.Dataset):
         input_file = self.image_filenames[index]
         input = load_img(input_file)
         if self.input_transform:
-            input = self.input_transform()(input)
+            input = self.input_transform(self.img_size, self.is_train)(input)
         label = os.path.basename(self.image_filenames[index])
         label = int(label.split("_")[0])
         return input, label
