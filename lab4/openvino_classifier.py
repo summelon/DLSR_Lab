@@ -125,7 +125,7 @@ def main(params):
 
     log.info("Preparing input blobs")
     # Define batch size here
-    BATCH_SIZE = 64
+    BATCH_SIZE = 1
     input_blob = next(iter(net.inputs))
     out_blob = next(iter(net.outputs))
     net.batch_size = BATCH_SIZE
@@ -157,10 +157,11 @@ def main(params):
             pred = np.argsort(res)[:, -1]
             total_correct += np.sum(np.equal(pred, labels))
             total_acc = 100. * (total_correct / counter)
-            print(f"Current accuracy is {total_acc:.2f}%, "
+            print(f"[ INFO ] Current accuracy is {total_acc:.2f}%, "
                   f"{total_correct}/{counter}", end="\r")
         except StopIteration:
-            print(f"Run out of batch.")
+            print(f"[ INFO ] ")
+            print(f"[ INFO ] Run out of batch.")
             break
     inf_end = time.time()
 

@@ -1,0 +1,64 @@
+{
+    "model": {
+        "model_name": "resnet18",
+        "model": "/workspace/openvino/resnet18.xml",
+        "weights": "/workspace/openvino/resnet18.bin"
+    },
+    "engine": {
+        "name": "model_name",
+        "launchers": [
+            {
+                "framework": "dlsdk",
+                "device": "CPU",
+                "adapter": "classification"
+            }
+        ],
+        "datasets": [
+            {
+                "name": "dataset_name",
+                "data_source": "/workspace/evaluation",
+                "annotation": "/workspace/food11_eva_annotation.pickle",
+                "preprocessing": [
+                    {
+                        "type": "bgr_to_rgb"
+                    },
+                    {
+                        "type": "resize",
+                        "interpolation": "BILINEAR",
+                        "aspect_ratio_scale": "greater",
+                        "use_pillow": true,
+                        "size": 224
+                    },
+                    {
+                        "type": "normalization",
+                        "std": "255,255,255"
+                    }
+                ],
+                "metrics": [
+                    {
+                        "name": "accuracy@top1",
+                        "type": "accuracy",
+                        "top_k": 1
+                    }
+                ]
+            }
+        ]
+    },
+    "compression": {
+        "target_device": "CPU",
+        "algorithms": [
+            {
+                "name": "AccuracyAwareQuantization",
+                "params": {
+                    "ranking_subset_size": 300,
+                    "max_iter_num": 30,
+                    "maximal_drop": 0.1,
+                    "drop_type": "absolute",
+                    "use_prev_if_drop_increase": false,
+                    "base_algorithm": "DefaultQuantization",
+                    "metric_subset_ratio": 0.5
+                }
+            }
+        ]
+    }
+}

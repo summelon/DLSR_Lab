@@ -1,0 +1,28 @@
+models:
+- name: resnet18
+  launchers:
+    - framework: dlsdk
+      device: CPU
+      model: ./resnet18.xml
+      weights: ./resnet18.bin
+      adapter: classification
+      mo_params:
+        batch: 16
+  datasets:
+    - name: food11re
+      data_source: /workspace/evaluation
+      annotation_conversion:
+        converter: food11
+        data_dir: /workspace/evaluation
+        labels_file: /workspace/labels.txt
+      annotation: food11_eva_annotation.pickle
+      preprocessing:
+        - type: bgr_to_rgb
+        - type: resize
+          size: 224
+          use_pillow: true
+          interpolation: BILINEAR
+        - type: normalization
+          std: 255, 255, 255
+      metrics:
+        - type: accuracy
