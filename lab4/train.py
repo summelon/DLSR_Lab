@@ -9,6 +9,7 @@ import sys
 sys.path.append("/home/chihsheng03/DLSR_Lab/lab4")
 import my_dataset
 import prune_utils
+import eval_utils
 
 
 PATIENCE = 2
@@ -100,47 +101,21 @@ def train_model(
         if patience == PATIENCE:
             break
 
-    print('Best validation Acc: {:4f}'.format(best_acc))
+    print('Best validation Acc: {:.4f}'.format(best_acc))
     model.load_state_dict(best_model_wts)
-
-    import matplotlib.pyplot as plt
-    x_axis = [x for x in range(len(lr_rec))]
-    plt.scatter(x_axis, lr_rec, c='r', marker='.')
-    plt.ylabel('learning rate')
-    plt.xlabel('steps')
-    plt.savefig('lr_record.png')
 
     return model
 
 
-def eval_model(model, device, eval_data_loader):
-    model.to(device)
-    model.eval()
+def print_func(l_name, l_type, w_or_b, sps, head=False):
+    if head:
+        print(f"{'Layer':<25} {'Op type':<15} "
+              f"{'params type':<10} {'Sparsity':<10}")
+    else:
+        print(f"{l_name:<25} {l_type.__class__.__name__:<15} "
+              f"{w_or_b:<10} {sps:<10.2%}")
 
-    running_size = 0
-    running_corrects = 0
-
-    pbar = tqdm.tqdm(eval_data_loader)
-    for inputs, labels in pbar:
-        inputs = inputs.to(device)
-        labels = labels.to(device)
-
-        with torch.set_grad_enabled(False):
-            outputs = model(inputs)
-            _, preds = torch.max(outputs, 1)
-
-        running_size += inputs.size(0)
-        running_corrects += torch.sum(preds == labels.data)
-        pbar.set_postfix(
-                acc='{:.3f}'.format(
-                    running_corrects.double()/running_size),
-                )
-
-    # epoch_loss = running_loss / data_sizes[phase]
-    acc = running_corrects.double() / running_size
-    print(running_size)
-
-    return acc
+    return True
 
 
 def run(params):
@@ -205,27 +180,32 @@ def run(params):
             cos_anl_scheduler,
             num_epochs=params['num_epochs'])
 
-    orig_acc = eval_model(model_conv, device, data_loaders[evaluation])
+    orig_acc = eval_utils.eval_model(
+            model_conv, device, data_loaders[evaluation], num_cls)
 
     # Pruning model
     layer_collection = prune_utils.get_all_layers(model_conv)
-    for c in range(10):
-        _ = prune_utils.prune(layer_collection, "channel")
-        for l in prune_utils.sparse_info(model_conv):
-            print(l)
+    best_prune_wts = copy.deepcopy(model_conv.state_dict())
+    for c in range(100):
+        _ = prune_utils.prune(layer_collection, params['pruning_type'])
         model_conv = train_model(
                 model_conv, device,
                 criterion, optimizer_conv, data_loaders,
                 cos_anl_scheduler,
                 num_epochs=params['num_epochs'])
 
-        accuracy = eval_model(model_conv, device, data_loaders[evaluation])
+        accuracy = eval_utils.eval_model(
+                model_conv, device, data_loaders[evaluation], num_cls)
 
-        if accuracy < (orig_acc * 0.9):
+        if accuracy < (orig_acc * params['acc_min_ratio']):
             print(f"Pruning stopped in {c} iteration.")
             break
+        else:
+            best_prune_wts = copy.deepcopy(model_conv.state_dict())
 
+    model_conv.load_state_dict(best_prune_wts)
     _ = prune_utils.rm_params(layer_collection)
+    _ = prune_utils.show_sparse_info(model_conv, print_func)
     torch.save(model_conv.state_dict(), params['save_path'])
 
     return float(accuracy)
@@ -252,6 +232,10 @@ def param_loader():
                         help="Learning rate.")
     parser.add_argument("--resolution", type=int, default=224,
                         help="Resolution of input after augmentation.")
+    parser.add_argument("--pruning_type", type=str, default="channel",
+                        help="Pruning type.")
+    parser.add_argument("--acc_min_ratio", type=float, default=0.9,
+                        help="Lowest acceptable accuracy ratio when purning")
     args, _ = parser.parse_known_args()
     return vars(args)
 
